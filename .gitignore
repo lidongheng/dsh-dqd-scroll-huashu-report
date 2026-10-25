@@ -1,0 +1,9 @@
+# Local Python cache files
+__pycache__/
+*.py[cod]
+
+# Reinstallable Node.js dependencies used by the report renderer
+report-build/vendor/node_modules/
+
+# Temporary PDF quality-check previews
+report-build/qc-learning/

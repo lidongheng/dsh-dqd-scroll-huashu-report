@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>从 dsh-bili-scroll 到 dsh-dqd-scroll</title>
+<link rel="stylesheet" href="report.css">
+<link rel="stylesheet" href="report-extra.css">
+</head>
+<body>
+<section class="cover">
+  <div class="cover-grid"></div>
+  <p class="eyebrow">PYTHON PROJECT FIELD GUIDE · 2026.10</p>
+  <div class="cover-rule"></div>
+  <h1>从 dsh-bili-scroll 到<br>懂球帝数据项目</h1>
+  <p class="cover-subtitle">Python 初学者的项目对照与扩展指南</p>
+  <p class="cover-thesis">保留插件编排边界，把平台数据能力落到可独立运行的 Python CLI。</p>
+  <div class="cover-meta"><span>代码结构导读</span><span>面向 Python 初学者与前端开发者</span><span>2026-10-25</span></div>
+  <div class="cover-foot"><span>已实现、离线支持与待核验的接口分开说明</span><span>01 / FIELD GUIDE</span></div>
+</section>
+<section class="abstract"><h2>摘要</h2>
+<h3>一句话结论</h3>
+<p>两个项目都使用 DSH 插件外壳，但 Python 的交接方式不同：<code>dsh-bili-scroll</code> 通过 MCP stdio 提供平台工具，<code>dsh-dqd-scroll</code> v0.3.0 通过固定参数启动自编 Python CLI。给懂球帝加功能时，先沿“数据来源 → 校验与加工 → 存储或报告 → CLI → 插件”推进；命令能独立运行后，再接设置页或调度。</p>
+<h3>当前项目状态</h3>
+<div class="callout key">
+  <strong>先从无网络的赛程日报读懂 Python 调用链，再看动态日报的 HTTP 请求。</strong>
+  dsh-dqd-scroll v0.3.0 的动态日报已支持 `teams.json` 中的 20 支英超球队在线读取和定时运行；球队名单、赛程仍通过本地样本解析和导入，球员资料与统计接口尚未接入。把这几类状态分开，能避免将“某类数据能在线读”误认为“所有数据接口都已实现”。
+</div>
+
+<p>当前懂球帝项目可以分成两条 Python 数据路径：</p>
+<ol>
+<li><strong>本地 SQLite 路径</strong>：从样本导入球队名单与赛程，再由 <code>schedule-report</code> 或 <code>daily-report</code> 读取数据库生成 Markdown。报告生成不发网络请求。</li>
+<li><strong>动态在线路径</strong>：Python 用标准库请求已核验的球队动态只读接口，按兴趣词筛选，写出两份 Markdown；DSH 插件按设定时间启动这条 CLI 命令。动态正文不会写入 SQLite。</li>
+</ol>
+<p>这份指南以 2026-10-25 工作区快照为依据：<code>dsh-bili-scroll</code> 的插件源码和 <code>package.json</code>，以及 <code>dsh-dqd-scroll</code> v0.3.0 的源码、README、Python 包配置和 <code>docs/api-contract.md</code>。动态接口的 GET、HTTP 200、业务 <code>code=0</code> 与下一页重放记录来自 DQD 契约文档；本次没有另行发送网络请求，也没有运行两个项目的业务命令。名单、赛程和球员接口是否能在线调用，仍需重新核实请求证据。</p>
+</section>
+<table class="pagewrap toc-page"><thead><tr><td><div class="crumb">目录 | dsh-dqd-scroll 项目学习与扩展指南</div></td></tr></thead><tbody><tr><td>
+<h2>目录</h2><div class="toc-row"><span>摘要</span><span>2</span></div><div class="toc-row"><span>第一幕｜两个项目共用宿主，Python 接法不同</span><span>4</span></div><div class="toc-row"><span>第二幕｜从一条 Python 命令读懂 dsh-dqd-scroll</span><span>8</span></div><div class="toc-row"><span>第三幕｜沿着现有结构增加一项功能</span><span>11</span></div><div class="toc-row"><span>工具箱｜后续迭代时保留哪些判断</span><span>14</span></div><div class="toc-row"><span>参考资料</span><span>15</span></div>
+</td></tr></tbody></table>
+<table class="pagewrap"><thead><tr><td><div class="crumb">第一幕｜两个项目共用宿主，Python 接法不同 | dsh-dqd-scroll 项目学习与扩展指南</div></td></tr></thead><tbody><tr><td class="chapter"><h2>第一幕｜两个项目共用宿主，Python 接法不同</h2>
+<h3>1. 先看数据怎样经过两个项目</h3>
+<p><code>dsh-bili-scroll</code> 的 Node 插件负责 DSH 设置、任务编排和 MCP 客户端；内置的 Python MCP 服务提供 B 站平台工具。两端通过标准输入输出（stdio）交换 MCP / JSON-RPC 消息。</p>
+<div class="diagram">
+  <div class="diagram-title">dsh-bili-scroll：Node 插件通过 MCP 调用 Python 平台工具</div>
+  <div class="flow vertical">
+    <div class="node host"><b>DSH 宿主</b><span>加载插件与运行任务</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>Node.js 插件</b><span>index.js / client.js：设置、任务编排与工具注册</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>headless DSH 任务</b><span>按 duty.md 工作，并调用插件注册的受限工具</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>lib/mcp.mjs</b><span>启动 MCP 子进程，并用 stdio 传递 JSON-RPC 消息</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node python"><b>Python MCP 服务</b><span>vendor/bilibili-mcp/mcp_server.py：注册平台工具</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node target"><b>哔哩哔哩</b><span>由平台工具请求数据或执行已注册操作</span></div>
+  </div>
+</div>
+
+<p><code>dsh-dqd-scroll</code> 保留 Node 插件作为 DSH 外壳，但把 Python 接口改成 CLI。插件用 <code>spawn</code> 执行固定的 Python 命令；Python 包通过 <code>argparse</code> 选择子命令，不启动 MCP 服务。</p>
+<div class="diagram">
+  <div class="diagram-title">dsh-dqd-scroll：DSH 插件启动自编 Python CLI</div>
+  <div class="flow vertical">
+    <div class="node host"><b>DSH 宿主</b><span>加载插件与设置页</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>Node.js 插件</b><span>index.js：读取定时配置，用 spawn 启动固定参数</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node python"><b>Python CLI</b><span>python -m dqd_scroll dynamics-report …</span></div>
+    <div class="flow inner">
+      <div class="node"><b>api/</b><span>读取已核验的球队动态接口</span></div>
+      <div class="node"><b>lib/ 与 workflow.py</b><span>校验字段、筛选、组织报告</span></div>
+      <div class="node"><b>repository.py</b><span>管理名单与赛程 SQLite 数据</span></div>
+    </div>
+    <div class="arrow down">↓</div>
+    <div class="node target"><b>本地结果</b><span>动态与赛程 Markdown；名单和赛程记录保存在 SQLite</span></div>
+  </div>
+</div>
+
+<p>图中的 Python 子模块不代表每条命令都会经过所有模块。动态命令经过 <code>api/</code> 和报告 formatter，但不经过 <code>repository.py</code>；赛程日报经过 <code>repository.py</code> 与 <code>lib/report.py</code>，不访问网络。先识别每条命令真正经过的路径，再读对应文件。</p>
+<h3>2. 两个项目的关键差异</h3>
+<table>
+<thead>
+<tr>
+<th>比较点</th>
+<th>dsh-bili-scroll</th>
+<th>dsh-dqd-scroll</th>
+<th>对后续开发的启发</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>发布版本</td>
+<td>npm 包 <code>2.1.0</code></td>
+<td>npm 包与 Python 包元数据均为 <code>0.3.0</code></td>
+<td>版本号是各自项目的发布标识，不代表功能可以直接互换</td>
+</tr>
+<tr>
+<td>DSH 外壳</td>
+<td>Node.js 插件提供设置、工具注册和任务编排</td>
+<td>Node.js 插件提供设置 API、用户数据迁移、环境准备和定时任务</td>
+<td>宿主相关职责放在 JS 层，Python 数据规则保持可独立调用</td>
+</tr>
+<tr>
+<td>Python 的入口</td>
+<td>MCP server；Node 端通过 <code>lib/mcp.mjs</code> 通信</td>
+<td><code>python -m dqd_scroll &lt;命令&gt;</code>；入口是 <code>__main__.py</code> 和 <code>cli.py</code></td>
+<td>DQD 新能力先做成明确的 CLI 子命令，无需增加 MCP</td>
+</tr>
+<tr>
+<td>平台适配</td>
+<td>项目内置 <code>vendor/bilibili-mcp</code>，以 MCP 工具提供能力</td>
+<td><code>src/dqd_scroll/api/</code> 中维护懂球帝请求，目前在线实现限于球队动态</td>
+<td>B 站地址、字段和工具不能直接移植到懂球帝</td>
+</tr>
+<tr>
+<td>一轮任务</td>
+<td>DSH 可以启动带任务章程的 headless 会话，由模型选择已注册工具处理内容</td>
+<td>命令模式直接运行 Python；模型模式也要求 headless DSH 启动同一条 Python 命令</td>
+<td>当前 DQD 的筛选和报告规则仍在 Python；模型模式不等于把业务逻辑迁入模型</td>
+</tr>
+<tr>
+<td>本机数据</td>
+<td>插件用户目录存放配置、凭证、状态和报告</td>
+<td>插件模式下，DSH 用户目录保存配置、Python 环境和调度状态；数据库路径来自配置；日报写入相应配置目录或工作目录下的 <code>out/</code></td>
+<td>配置、数据库、报告与安装代码各自有明确位置</td>
+</tr>
+<tr>
+<td>Python 环境</td>
+<td>Bili 的 Python MCP 按上游项目要求安装依赖</td>
+<td>要求 Python 3.11；插件可用 uv 在 DSH 用户目录准备环境；Python 包依赖为 <code>tzdata</code></td>
+<td>新依赖先确认标准库是否足够，再更新 <code>pyproject.toml</code> 和环境安装流程</td>
+</tr>
+<tr>
+<td>当前外部动作</td>
+<td>具备多种平台工具，部分功能可执行评论等操作</td>
+<td>动态任务是只读 GET；名单和赛程仅有离线导入；没有评论或平台写入命令</td>
+<td>每个新命令都要标明会不会访问网络、改数据库或产生平台副作用</td>
+</tr>
+</tbody></table>
+<p>可复用的是职责划分、受限入口、用户数据与安装包分离等设计；不可复用的是平台 API、字段、认证方式和 Python 工具实现。MCP 是一种调用协议，不是“所有 Python 后端都必须使用”的框架。</p>
+<p>当前源码还存在一个版本显示不一致：<code>package.json</code> 与 <code>pyproject.toml</code> 都声明 <code>0.3.0</code>，但 Python 的 <code>--version</code> 参数仍输出 <code>0.1.1</code>，<code>src/dqd_scroll/__init__.py</code> 的 <code>__version__</code> 是 <code>0.1.0</code>。报告按 npm 与 Python 包元数据称当前项目为 v0.3.0；后续发版前应把 CLI 和模块版本显示同步。仓库已有发布元数据检查会比较 npm 与 Python 包版本，但该检查不覆盖这两个 Python 版本字符串。</p>
+<h3>v0.3.0 的插件层调用链</h3>
+<p>v0.3.0 不只是多了一条动态 API：插件设置、Python 安装、数据库初始化、定时运行和报告日志已经连成可用的宿主流程。读懂这条链，能看出哪些工作属于 JavaScript 插件，哪些属于 Python。</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>主要文件</th>
+<th>Python 初学者要理解的事</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>插件启动</td>
+<td><code>index.js::apply()</code>、<code>lib/user-data.js::initializeUserData()</code></td>
+<td>DSH 提供用户目录；插件把配置、数据库和旧日报迁入该目录，避免写进安装目录</td>
+</tr>
+<tr>
+<td>设置读写</td>
+<td><code>client.js</code>、<code>settings-api.js</code></td>
+<td>页面通过本机 API 保存球队、兴趣词、时间与执行方式；JS 校验表单并更新 TOML</td>
+</tr>
+<tr>
+<td>环境准备</td>
+<td><code>settings-api.js</code>、<code>lib/uvfetch.mjs</code></td>
+<td>插件下载并校验 uv，再准备 Python 3.11、安装 <code>tzdata</code> 并调用 <code>db-init</code></td>
+</tr>
+<tr>
+<td>自动调度</td>
+<td><code>lib/scheduler.js</code>、<code>lib/dynamics-scheduled-runner.js</code></td>
+<td>Windows 注册系统任务；macOS 由插件内每 30 秒检查一次上海时间</td>
+</tr>
+<tr>
+<td>Python 工作</td>
+<td><code>__main__.py</code> → <code>cli.py</code> → <code>workflow.py</code> → <code>api/</code>、<code>lib/</code></td>
+<td>CLI 解析输入；业务层请求、检查、筛选并生成 Markdown</td>
+</tr>
+<tr>
+<td>运行记录</td>
+<td><code>lib/logger.js</code>、<code>dynamics-schedule-state.json</code></td>
+<td>日志和最近执行状态保存在 DSH 用户数据目录，设置页能查看</td>
+</tr>
+</tbody></table>
+<p>在命令执行模式下，调度器将固定的 <code>dynamics-report</code> 参数直接交给 Python。模型执行模式会启动 headless DSH，并要求它原样运行同一条 Python 命令、检查结果文件；数据抓取、筛选和 Markdown 格式仍由 Python 代码负责。设置页的“现在跑一次”使用用户选定的起止时间，并将手动运行状态单独记录。</p>
+<h3>3. 懂球帝功能要按证据分成三类</h3>
+<table>
+<thead>
+<tr>
+<th>功能</th>
+<th>当前实现</th>
+<th>证据边界</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>球队动态日报</td>
+<td>Python 在线请求 GET，解析 <code>data.articles</code> 和 <code>data.next</code>，筛选兴趣词，生成全部动态与兴趣命中两份报告；DSH 可按配置时间调度</td>
+<td><code>docs/api-contract.md</code> 记载用户在 mitmweb 观察并在 Postman 重放首屏和下一页，HTTP 200、业务 <code>code=0</code>。程序不保存抓包 Cookie、Token 或设备标识；动态正文只在本次进程处理，不写 SQLite</td>
+</tr>
+<tr>
+<td>球队名单</td>
+<td>从本地 JSON 响应样本解析、校验并替换 SQLite 中的人员关系</td>
+<td>没有在线名单请求；历史请求线索不能证明当前认证、状态码或请求参数</td>
+</tr>
+<tr>
+<td>球队赛程</td>
+<td>从本地 JSON 样本解析当前赛季、核对 URL、去重并写入 SQLite；<code>schedule-report</code> 和 <code>daily-report</code> 只读数据库</td>
+<td>没有在线赛程请求；响应样本中的赛季 URL 不是实际 HTTP 请求记录</td>
+</tr>
+<tr>
+<td>球员资料、统计与能力值</td>
+<td>暂无对应在线数据流程</td>
+<td><code>docs/api-contract.md</code> 中的 Postman URL 是待复核线索，字段、参数和认证要求仍需核验</td>
+</tr>
+</tbody></table>
+<p>Python 项目目前初始化五张 SQLite 表：<code>teams</code>、<code>players</code>、<code>team_players</code>、<code>league_seasons</code> 和 <code>team_schedules</code>。动态文章不在这些表里。<code>status</code> 命令也明确说明了动态只读日报已经接入，而名单、赛程和球员接口的实时 HTTP 契约仍待核验。</p>
+<h3>4. 对照源码时先抓住每边的“交接点”</h3>
+<p>先从两个入口文件各追一条路径：B 站是 <code>index.js</code> → <code>lib/mcp.mjs</code> → <code>vendor/bilibili-mcp/mcp_server.py</code>；懂球帝是 <code>index.js</code> → <code>src/dqd_scroll/__main__.py</code> → <code>cli.py</code>。到 Python 端以后，再按本章后面的文件职责表继续读 <code>api/</code>、<code>lib/</code>、<code>workflow.py</code> 和 <code>repository.py</code>。</p>
+<p>不要从大文件第一行读到最后一行。先追踪一个函数调用，再沿着实际被调用的模块深入；这样读到的是一条具体的数据流，而不是一堆互不相连的文件名。</p>
+</td></tr></tbody></table><table class="pagewrap"><thead><tr><td><div class="crumb">第二幕｜从一条 Python 命令读懂 dsh-dqd-scroll | dsh-dqd-scroll 项目学习与扩展指南</div></td></tr></thead><tbody><tr><td class="chapter"><h2>第二幕｜从一条 Python 命令读懂 dsh-dqd-scroll</h2>
+<h3>5. 从没有网络的赛程日报开始</h3>
+<p>第一条适合初学者追踪的命令是 <code>daily-report</code>：数据已经在 SQLite 中，生成报告不需要请求懂球帝，也不更新数据库。它能把 Python 的入口、命令分发、数据库读取、格式化和文件输出串成一条线。</p>
+<p>从项目根目录运行的示例：</p>
+<pre><code class="language-powershell">python -m dqd_scroll daily-report --database data/dqd_scroll.sqlite3 --team-id 50000529 --as-of 2026-10-25
+</code></pre>
+<p><code>--as-of</code> 固定报告日期，便于重复生成同一日历月的报告。代码调用顺序如下：</p>
+<div class="diagram">
+  <div class="diagram-title">daily-report 的完整本地调用链</div>
+  <div class="flow vertical">
+    <div class="node"><b>python -m dqd_scroll</b><span>Python 按包方式启动项目</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>src/dqd_scroll/__main__.py</b><span>调用 cli.main()</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>cli.py</b><span>argparse 解析 daily-report、--database、--team-id 和 --as-of</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node python"><b>generate_daily_report()</b><span>查球队和当前赛季赛程，计算日期范围</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>repository.py → lib/report.py</b><span>读取 SQLite，格式化 Markdown</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node target"><b>out/2026-10-25.md</b><span>保存本地赛程日报</span></div>
+  </div>
+</div>
+
+<table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>文件或函数</th>
+<th>初学者可以问自己什么？</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td><code>__main__.py</code></td>
+<td>用户运行 <code>python -m</code> 时，哪一个 Python 文件先执行？</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>cli.py::build_parser()</code></td>
+<td>命令名和参数如何变成 <code>args</code>？哪些参数是必填？</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>cli.py::main()</code></td>
+<td><code>args.command</code> 怎样选中具体处理函数？</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>generate_daily_report()</code></td>
+<td>它拿到什么参数，调用哪些读取和格式化函数？</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>Repository.get_team_schedule()</code></td>
+<td>SQL 从哪张表读数据？赛季怎样被限定？</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>format_daily_schedule_report()</code></td>
+<td>输入数据怎样变成表格文字？</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>Path.write_text()</code></td>
+<td>输出文件在哪个目录，编码是什么？</td>
+</tr>
+</tbody></table>
+<p>这条命令读取 SQLite，并把报告写到当前工作目录的 <code>out/&lt;日期&gt;.md</code>。它不访问网络，也不改写 SQLite。遇到数据库文件不存在时，程序会报错要求先初始化数据库，不会默默创建一个空数据库来掩盖路径问题。</p>
+<p>路径会随命令入口不同而变化：<code>daily-report</code> 按当前工作目录写入 <code>out/&lt;日期&gt;.md</code>；<code>dynamics-report</code> 按 <code>--config</code> 文件所在目录写入 <code>out/dynamics/&lt;日期&gt;/</code>。插件把配置放在 DSH 用户数据目录，所以插件运行生成的动态报告也落在该用户目录下；从项目根目录手动运行时，结果则写进项目根目录的 <code>out/</code>。</p>
+<h3>6. 再看在线动态日报：一次命令经过哪些层</h3>
+<p>动态日报比赛程日报多了网络和分页，因此读起来更适合放在第二步。<code>config.toml</code> 的 <code>[dynamics]</code> 保存球队名称、兴趣词和运行时间；<code>teams.json</code> 将懂球帝球队名称映射到球队 ID。插件设置页修改用户配置，Python CLI 负责具体请求、筛选和报告内容。配置球队名称必须与映射表精确匹配；程序不会猜测 ID。</p>
+<div class="diagram">
+  <div class="diagram-title">动态日报从定时器到两份 Markdown</div>
+  <div class="flow vertical">
+    <div class="node host"><b>index.js / scheduler.js</b><span>Windows 使用系统任务；macOS 每 30 秒检查上海时间和当天执行状态</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>spawn Python CLI</b><span>python -m dqd_scroll dynamics-report --config … --teams …</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>cli.py → workflow.py</b><span>加载设置，逐队组织抓取、筛选和报告格式化</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node python"><b>api/dqd_api.py → api/client.py</b><span>请求 JSON，校验分页 URL 和响应字段；最多 50 页</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>lib/team_dynamics.py</b><span>校验动态字段、按 show_time 筛选、按兴趣词匹配</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node target"><b>lib/dynamics_report.py</b><span>写出 -all.md 和 -interests.md；不写入 SQLite</span></div>
+  </div>
+</div>
+
+<p>关键实现边界如下：</p>
+<ul>
+<li><code>api/client.py</code> 使用 Python 标准库 <code>urllib.request.urlopen</code> 发出 GET，检查 HTTP 状态并解析 JSON；当前代码没有引入 HTTPX。</li>
+<li><code>api/dqd_api.py</code> 校验接口域名、路径、球队 ID 和分页 <code>type</code>，发现重复分页 URL 会停止；分页最多请求 50 页。</li>
+<li><code>lib/team_dynamics.py</code> 把响应中的 <code>show_time</code> 转成上海本地时间，再按时间范围筛选；兴趣匹配是大小写不敏感的子串匹配。</li>
+<li><code>workflow.py::build_team_dynamics_reports()</code> 把抓取、兴趣筛选和两种 Markdown 格式连接起来。它不调用 <code>Repository</code>，所以动态内容不会写进 SQLite。</li>
+<li><code>index.js</code> 用固定的命令与参数数组启动 Python，不把任意 shell 命令交给动态内容；进程成功退出后才记录当天运行完成。</li>
+</ul>
+<h3>7. Python 文件各自负责什么</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>负责的事</th>
+<th>初学者读它时留意</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>config.py</code></td>
+<td>读取 TOML 和球队 JSON，检查必需项</td>
+<td>缺配置会在哪里报错？</td>
+</tr>
+<tr>
+<td><code>models.py</code></td>
+<td>定义球队、球员、赛程和动态对象</td>
+<td>每个对象有哪些字段？</td>
+</tr>
+<tr>
+<td><code>api/client.py</code></td>
+<td>发 HTTP 请求并解码 JSON</td>
+<td>HTTP 与 JSON 错误如何区分？</td>
+</tr>
+<tr>
+<td><code>api/dqd_api.py</code></td>
+<td>构造请求、读取分页并校验响应</td>
+<td>哪些字段来自接口？</td>
+</tr>
+<tr>
+<td><code>lib/team_dynamics.py</code></td>
+<td>解析动态并筛选时间和兴趣词</td>
+<td>解析与筛选为何分层？</td>
+</tr>
+<tr>
+<td><code>lib/team_roster.py</code> / <code>lib/team_schedule.py</code></td>
+<td>清洗样本并检查业务规则</td>
+<td>缺字段会怎样？</td>
+</tr>
+<tr>
+<td><code>repository.py</code></td>
+<td>SQLite 建表、查询和事务写入</td>
+<td>哪个方法会写数据库？</td>
+</tr>
+<tr>
+<td><code>workflow.py</code></td>
+<td>串联 API、仓库与报告格式化</td>
+<td>它协调哪些模块？</td>
+</tr>
+<tr>
+<td><code>lib/report.py</code> / <code>lib/dynamics_report.py</code></td>
+<td>把结果写成 Markdown</td>
+<td>格式与数据读取是否分离？</td>
+</tr>
+<tr>
+<td><code>cli.py</code></td>
+<td>用 <code>argparse</code> 解析参数并调用处理函数</td>
+<td>新命令在哪里注册？</td>
+</tr>
+</tbody></table>
+<p>读函数先问输入、校验和输出是什么。<code>def</code> 定义函数，缩进表示代码块，<code>import</code> 引入模块，<code>return</code> 返回结果；CLI 的 <code>return 0</code> 表示成功退出，<code>raise ValueError(...)</code> 会带着具体原因停止。<code>parse_team_dynamic()</code> 用 <code>raw_dynamic.get(&#39;id&#39;)</code> 取 ID，再检查类型和值；不符合时明确报错，不会补默认 ID。</p>
+<p>查看 CLI 帮助：<code>python -m dqd_scroll --help</code> 会列出子命令，<code>python -m dqd_scroll daily-report --help</code> 会列出参数。<code>python -m</code> 表示按包运行模块；本项目先执行 <code>src/dqd_scroll/__main__.py</code>，再进入 <code>cli.main()</code>。沿着实际函数调用逐步阅读，比从头看完整个文件更容易理清流程。</p>
+</td></tr></tbody></table><table class="pagewrap"><thead><tr><td><div class="crumb">第三幕｜沿着现有结构增加一项功能 | dsh-dqd-scroll 项目学习与扩展指南</div></td></tr></thead><tbody><tr><td class="chapter"><h2>第三幕｜沿着现有结构增加一项功能</h2>
+<h3>8. 先选一个不需要新接口的练习</h3>
+<p>适合第一次扩展的练习，是给已有赛程 Markdown 增加一个“已结束比赛数量”摘要。它只使用现有 SQLite 数据，不需要新 API，也不需要新增数据库表。开始编码前，先确认当前样本里用于识别完赛状态和比分的字段，再写清统计口径；如果这两个条件无法确认，就先停在字段核对。</p>
+<p>这一小功能可以按如下顺序落地：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>可能涉及的文件</th>
+<th>只做这一层的工作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. 定义结果</td>
+<td>需求说明或 CLI 帮助文字</td>
+<td>明确“已结束”的判定字段、纳入范围、输出示例</td>
+</tr>
+<tr>
+<td>2. 读现有数据</td>
+<td><code>repository.py</code>、<code>models.py</code></td>
+<td>确认查询对象已经提供统计所需字段；避免重复查同一份数据库</td>
+</tr>
+<tr>
+<td>3. 写计算</td>
+<td><code>lib/team_schedule.py</code> 或新的 <code>lib/team_summary.py</code></td>
+<td>输入赛程模型，输出统计结果；不发 HTTP、不写文件</td>
+</tr>
+<tr>
+<td>4. 写展示</td>
+<td><code>lib/report.py</code></td>
+<td>把统计结果插入 Markdown；格式不负责重新查数据</td>
+</tr>
+<tr>
+<td>5. 暴露命令</td>
+<td><code>cli.py</code></td>
+<td>增加明确的子命令和必填参数，复用仓库与 formatter</td>
+</tr>
+<tr>
+<td>6. 再接 DSH</td>
+<td><code>index.js</code>、需要时的 <code>client.js</code> / <code>settings-api.js</code></td>
+<td>CLI 参数和输出稳定后，再决定是否增加按钮或定时调用</td>
+</tr>
+</tbody></table>
+<p>如果这个摘要只用于显示，不必为了它加一张表。只有新数据需要跨运行保留时，才考虑在 <code>repository.py</code> 中添加表或字段，并明确事务、唯一键和旧数据处理规则。这样能避免把“计算结果”误当成“必须存储的新状态”。</p>
+<h3>9. 如果功能要请求新的懂球帝接口</h3>
+<p>球队名单、赛程和球员数据不应照搬动态接口的 URL 或请求参数。项目的接口记录把这些请求列为待核验线索；即使一份响应样本能被解析，也不能单独证明 HTTP 方法、状态码、认证或分页契约。新接口按下面的次序接入：</p>
+<div class="diagram">
+  <div class="diagram-title">增加一种在线数据的推荐调用链</div>
+  <div class="flow vertical">
+    <div class="node"><b>docs/api-contract.md</b><span>保存请求证据、脱敏响应样本与未确认项</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>api/</b><span>新增窄用途请求函数；只发送已核验的只读请求</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node python"><b>lib/ + models.py</b><span>检查字段类型与业务规则，转换为项目模型</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>workflow.py</b><span>决定本次数据如何流转，以及是否需要存储</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>repository.py（需要保留时）</b><span>在单个事务中写入经过验证的数据</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node"><b>cli.py</b><span>提供明确命令、参数、成功输出和失败退出路径</span></div>
+    <div class="arrow down">↓</div>
+    <div class="node host"><b>index.js / 设置页（需要自动化时）</b><span>调用已稳定的 CLI，不重写 Python 业务规则</span></div>
+  </div>
+</div>
+
+<p>编码顺序的原因是每层都能独立回答一个问题：请求拿到什么？解析器是否能识别？数据是否完整？需不需要保存？命令是否能被人单独运行？宿主是否真的需要调度它？如果先改设置页，往往会把未经验证的数据契约直接变成用户可见功能。</p>
+<p>当前可复用的代码路径包括：</p>
+<ul>
+<li>名单样本：<code>fixtures/team-roster.response.sample.json</code> → <code>lib/team_roster.py</code> → <code>workflow.save_team_roster_response()</code> → <code>Repository.replace_team_players()</code>。</li>
+<li>赛程样本：<code>fixtures/team-schedule.response.sample.json</code> → <code>lib/team_schedule.py</code> → <code>workflow.save_team_schedule_response()</code> → <code>Repository.replace_team_schedule()</code>。</li>
+<li>在线动态：<code>api/dqd_api.py</code> → <code>lib/team_dynamics.py</code> → <code>workflow.build_team_dynamics_reports()</code> → <code>lib/dynamics_report.py</code>。</li>
+</ul>
+<h3>10. 新功能的最小交付清单</h3>
+<table>
+<thead>
+<tr>
+<th>检查项</th>
+<th>开始写代码前应能回答</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>数据来源</td>
+<td>来自 SQLite、经过核验的 HTTP 响应，还是用户配置？</td>
+</tr>
+<tr>
+<td>样本依据</td>
+<td>哪个样本证明字段路径、类型和可选性？</td>
+</tr>
+<tr>
+<td>失败行为</td>
+<td>缺字段、类型变化、冲突记录或请求失败时，程序会在哪里停止？</td>
+</tr>
+<tr>
+<td>存储需要</td>
+<td>是否真的要跨运行保存？若要保存，唯一键与事务边界是什么？</td>
+</tr>
+<tr>
+<td>入口</td>
+<td>用户、定时器或设置页调用哪个固定 CLI 命令？必填参数是什么？</td>
+</tr>
+<tr>
+<td>外部影响</td>
+<td>这项功能会请求网络、写本地数据库，还是执行平台写入？</td>
+</tr>
+<tr>
+<td>输出范围</td>
+<td>报告写到哪里，是否会保存原始响应或敏感信息？</td>
+</tr>
+</tbody></table>
+<p>“每层只做自己的事”不是为了多建文件，而是为了让第一次失败时容易定位：请求错误看 <code>api/</code>，字段不符看 <code>lib/</code>，数据库错误看 <code>repository.py</code>，命令参数错误看 <code>cli.py</code>，宿主没启动进程才看 <code>index.js</code>。</p>
+</td></tr></tbody></table><table class="pagewrap"><thead><tr><td><div class="crumb">工具箱｜后续迭代时保留哪些判断 | dsh-dqd-scroll 项目学习与扩展指南</div></td></tr></thead><tbody><tr><td class="chapter"><h2>工具箱｜后续迭代时保留哪些判断</h2>
+<h3>11. 把 dsh-bili-scroll 当成结构参照，不当成代码模板</h3>
+<table>
+<thead>
+<tr>
+<th>可以借鉴</th>
+<th>应按懂球帝项目重新决定</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>插件 UI、任务编排和平台数据能力分层</td>
+<td>B 站的 API、工具名、请求参数与响应字段</td>
+</tr>
+<tr>
+<td>用户配置和运行状态放在用户数据目录</td>
+<td>B 站 MCP server 与工具实现</td>
+</tr>
+<tr>
+<td>限制可调用的入口，拒绝无边界的通用 shell</td>
+<td>任何账号认证、Cookie 或设备标识的使用方式</td>
+</tr>
+<tr>
+<td>日志与结果文件有固定位置和明确边界</td>
+<td>内容摘要、用户互动与定时策略</td>
+</tr>
+</tbody></table>
+<p>懂球帝项目已经选定“JS 插件 + Python CLI”的交接方式。只有未来出现明确的 MCP 消费方或 MCP 工具契约需求时，才重新讨论协议；单纯增加一条日报、一次统计或一种数据解析，并不要求增加 MCP。</p>
+<h3>12. 当前边界与下一步优先级</h3>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>工作</th>
+<th>当前状态</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>先读懂 <code>daily-report</code> 的本地调用链</td>
+<td>代码和本地赛程数据库路径已存在，不需要新接口</td>
+</tr>
+<tr>
+<td>2</td>
+<td>从脱敏样本改进名单/赛程解析或输出</td>
+<td>离线导入和 SQLite 处理已实现</td>
+</tr>
+<tr>
+<td>3</td>
+<td>如需在线名单/赛程，重新核实真实请求契约</td>
+<td>当前尚未实现 HTTP 请求；不要把旧 URL 当成已确认</td>
+</tr>
+<tr>
+<td>4</td>
+<td>核实球员资料、统计、能力值接口</td>
+<td>现有 Postman 记录只是待复核线索</td>
+</tr>
+<tr>
+<td>5</td>
+<td>CLI 需求稳定后才让 DSH 调度</td>
+<td>动态日报已有调度；新的赛程或球员功能尚未接入调度</td>
+</tr>
+</tbody></table>
+<p>现有动态接口的成功调用只能说明这一个接口在已记录的请求条件下曾成功，不能证明所有懂球帝接口都免认证、长期稳定或允许任意频率访问。若接口字段变化，解析器应报告不符合契约；若请求授权或平台规则不清楚，应先确认使用范围。请求只读也可能形成服务端访问记录，不应伪造浏览、点赞、评论或其他用户行为。</p>
+<h3>13. 证据范围</h3>
+<p>比较依据是本机两个项目在 2026-10-25 的工作区快照：dsh-bili-scroll v2.1.0 的 <code>package.json</code>、<code>index.js</code>、<code>client.js</code>、<code>lib/mcp.mjs</code>、<code>lib/state.mjs</code> 和 <code>vendor/bilibili-mcp/</code>；dsh-dqd-scroll v0.3.0 的源码、README、<code>package.json</code>、<code>pyproject.toml</code>、<code>environment.yml</code>、<code>tests/release-metadata.test.mjs</code> 与 <code>docs/api-contract.md</code>。这是代码结构与已记录接口证据的对照，不是对未来可用性或平台政策的保证。</p>
+<p>懂球帝动态接口的 Postman 验证过程来自项目自身的契约记录；本指南没有独立重放请求。名单、赛程和球员接口仍列为待核验，不从样本响应或旧请求 URL 推断认证结论。运行环境准备方面，项目文档说明插件可在 DSH 用户数据目录准备 uv 和 Python 3.11；本报告没有在本机重新安装该环境。</p>
+</td></tr></tbody></table><table class="pagewrap"><thead><tr><td><div class="crumb">参考资料 | dsh-dqd-scroll 项目学习与扩展指南</div></td></tr></thead><tbody><tr><td class="chapter"><h2>参考资料</h2>
+<p>以下代码路径均相对于各自项目根目录。</p>
+<h3>dsh-bili-scroll</h3>
+<ul>
+<li><code>README.md</code>：插件运行方式、功能和本机数据边界。</li>
+<li><code>index.js</code>、<code>client.js</code>：DSH 插件入口与设置页。</li>
+<li><code>lib/mcp.mjs</code>：Node 与 MCP 子进程之间的 stdio 通信。</li>
+<li><code>lib/state.mjs</code>：插件用户数据目录与状态。</li>
+<li><code>prompts/duty.md</code>：一次任务的目标和边界。</li>
+<li><code>vendor/bilibili-mcp/mcp_server.py</code>：内置 Python MCP 工具服务。</li>
+<li><code>package.json</code>、<code>NOTICE.md</code>：插件元数据、依赖和第三方署名。</li>
+</ul>
+<h3>dsh-dqd-scroll</h3>
+<ul>
+<li><code>README.md</code>、<code>config.toml</code>、<code>teams.json</code>：项目用途、配置格式和球队映射。</li>
+<li><code>index.js</code>、<code>client.js</code>、<code>settings-api.js</code>、<code>lib/user-data.js</code>：插件调度、设置页接口和本机用户数据。</li>
+<li><code>environment.yml</code>、<code>pyproject.toml</code>、<code>src/dqd_scroll/__main__.py</code>、<code>src/dqd_scroll/__init__.py</code>：Python 环境、包元数据与命令入口。</li>
+<li><code>src/dqd_scroll/cli.py</code>、<code>workflow.py</code>、<code>models.py</code>、<code>repository.py</code>：命令、流程编排、数据模型与 SQLite。</li>
+<li><code>src/dqd_scroll/api/</code>、<code>src/dqd_scroll/lib/</code>：接口读取、响应处理、赛程加工与 Markdown 输出。</li>
+<li><code>docs/api-contract.md</code>、<code>fixtures/</code>：接口证据记录和离线响应样本。</li>
+<li><code>tests/release-metadata.test.mjs</code>：发布文件清单与 npm/Python 包版本一致性检查；当前 CLI 版本字符串不在该一致性断言中。</li>
+</ul>
+<div class="source-note">代码实现状态与接口证据分开描述。项目代码能证明“现在写了什么”；接口契约记录能证明“哪些请求曾被观察或重放”；两者都不能单独保证接口未来不变。</div>
+</td></tr></tbody></table>
+</body>
+</html>

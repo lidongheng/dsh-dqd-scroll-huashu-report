@@ -1,0 +1,45 @@
+.learning-cover h1 {
+  max-width: 158mm;
+  font-size: 30pt;
+}
+
+.learning-cover .cover-thesis {
+  max-width: 142mm;
+  margin-top: 12mm;
+}
+
+.abstract p {
+  margin-bottom: 1em;
+}
+
+.chapter h3 {
+  margin-top: 5mm;
+  padding-bottom: 1.3mm;
+  border-bottom: .5pt solid #e2e8f0;
+  font-size: 13pt;
+}
+
+.chapter li {
+  margin-bottom: 1.7mm;
+}
+
+.chapter p + table,
+.chapter table + p {
+  margin-top: 3mm;
+}
+
+.chapter td,
+.chapter th {
+  line-height: 1.5;
+}
+
+.chapter hr {
+  border: 0;
+  border-top: .5pt solid #e5eaf0;
+  margin: 4mm 0;
+}
+
+.chapter > p {
+  orphans: 3;
+  widows: 3;
+}
